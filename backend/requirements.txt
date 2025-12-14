@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+chromadb
+pypdf
+langchain-text-splitters
+openai
+scikit-learn
+
