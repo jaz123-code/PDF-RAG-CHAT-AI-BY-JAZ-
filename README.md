@@ -100,5 +100,5 @@ This project demonstrates:
 
 ## 👨‍💻 Author
 
-Built by **[Your Name]**  
+Built by **[Muhammed jazim T]**  
 AI / ML Engineering Enthusiast# PDF-RAG-CHAT-AI-BY-JAZ-
