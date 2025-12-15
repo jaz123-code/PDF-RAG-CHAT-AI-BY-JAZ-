@@ -97,6 +97,14 @@ This project demonstrates:
 - Deployment (Vercel + Render)
 
 ---
+## 🌐 Live Demo
+
+Frontend is deployed on Vercel.
+
+> ⚠️ Note: Backend runs locally using a local LLM (Ollama) and is not publicly hosted.
+
+Live URL: https://your-vercel-link.vercel.app
+
 
 ## 👨‍💻 Author
 
