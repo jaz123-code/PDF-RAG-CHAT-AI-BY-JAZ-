@@ -1,32 +1,18 @@
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse
+from collections import defaultdict
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from openai import OpenAI
-from fastapi import Query
-import ollama 
 import chromadb
+import ollama
 
-# ------------------------
-# ENV SETUP
-# ------------------------
-
-load_dotenv()
-
-if not os.getenv("OPENAI_API_KEY"):
-    raise ValueError("OPENAI_API_KEY environment variable not set")
-
-# ------------------------
-# FASTAPI APP
-# ------------------------
+# -----------------------------
+# APP SETUP
+# -----------------------------
 
 app = FastAPI()
-class QueryModel(BaseModel):
-    query: str
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,15 +21,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-try :
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-except Exception as e:
-    raise HTTPException(status_code=500, detail=str(e))
 
-
-# ------------------------
-# CHROMA DB (PERSISTENT)
-# ------------------------
+# -----------------------------
+# VECTOR DATABASE (CHROMADB)
+# -----------------------------
 
 chroma_client = chromadb.PersistentClient(path="vectorstore")
 
@@ -52,9 +33,16 @@ collection = chroma_client.get_or_create_collection(
     metadata={"hnsw:space": "cosine"}
 )
 
-# ------------------------
-# UTILS
-# ------------------------
+# -----------------------------
+# CHAT MEMORY (SESSION BASED)
+# -----------------------------
+
+chat_sessions = defaultdict(list)
+MAX_HISTORY = 6  # last 3 user + 3 assistant messages
+
+# -----------------------------
+# EMBEDDINGS (OLLAMA)
+# -----------------------------
 
 def get_embedding(text: str):
     try:
@@ -66,14 +54,14 @@ def get_embedding(text: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ------------------------
-# PDF UPLOAD (MULTI-PDF)
-# ------------------------
+# -----------------------------
+# PDF UPLOAD (MULTI PDF)
+# -----------------------------
 
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        raise HTTPException(status_code=400, detail="Only PDF files allowed")
 
     os.makedirs("data", exist_ok=True)
     file_path = f"data/{file.filename}"
@@ -100,7 +88,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         embedding = get_embedding(chunk)
 
         collection.add(
-            ids=[f"{file.filename}_{i}"],   # UNIQUE ID
+            ids=[f"{file.filename}_{i}"],
             documents=[chunk],
             embeddings=[embedding],
             metadatas=[{"source": file.filename}]
@@ -112,80 +100,82 @@ async def upload_pdf(file: UploadFile = File(...)):
         "chunks_added": len(chunks)
     }
 
-# ------------------------
-# NORMAL ASK ENDPOINT
-# ------------------------
-
-@app.post("/ask")
-async def ask_question(query: QueryModel):
-    query_embedding = get_embedding(query.query)
-
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=3
-    )
-
-    top_chunks = results["documents"][0]
-    context = "\n\n".join(top_chunks)
-
-    prompt = f"""
-Answer ONLY using the context below.
-
-CONTEXT:
-{context}
-
-QUESTION:
-{query}
-
-If the answer is not found, say: "Not found in uploaded PDFs."
-"""
-
-    response = ollama.chat(
-        model="llama2",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return {
-        "answer": response["message"]["content"],
-        "sources": results["metadatas"][0]
-    }
-
-# ------------------------
-# STREAMING ENDPOINT
-# ------------------------
-
-from fastapi import Query
+# -----------------------------
+# STREAMING CHAT WITH:
+# - RAG
+# - PDF FILTERING
+# - CHAT MEMORY
+# -----------------------------
 
 @app.post("/stream")
-async def stream_answer(query: str = Query(...)):
+async def stream_answer(
+    query: str = Query(...),
+    session_id: str = Query(...),
+    source: str | None = Query(None),
+):
+    # 1️⃣ Embed query
     query_embedding = get_embedding(query)
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=3
-    )
+    # 2️⃣ Retrieve documents (with optional PDF filter)
+    if source:
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=3,
+            where={"source": source}
+        )
+    else:
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=3
+        )
+
+    if not results["documents"][0]:
+        return StreamingResponse(
+            iter(["Not found in uploaded PDFs."]),
+            media_type="text/plain"
+        )
 
     context = "\n\n".join(results["documents"][0])
 
-    prompt = f"""
-Answer ONLY using the context below.
+    # 3️⃣ Load recent chat history
+    history = chat_sessions[session_id][-MAX_HISTORY:]
 
-CONTEXT:
-{context}
+    # 4️⃣ Build messages
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a helpful AI assistant. Answer strictly using the provided document context."
+        },
+        {
+            "role": "system",
+            "content": f"DOCUMENT CONTEXT:\n{context}"
+        },
+    ]
 
-QUESTION:
-{query}
+    messages.extend(history)
+    messages.append({"role": "user", "content": query})
 
-If the answer is not found, say:
-"Not found in uploaded PDFs."
-"""
+    assistant_reply = ""
 
+    # 5️⃣ Stream response + save memory
     async def event_generator():
+        nonlocal assistant_reply
         for chunk in ollama.chat(
-            model="llama2",
-            messages=[{"role": "user", "content": prompt}],
+            model="llama3",
+            messages=messages,
             stream=True
         ):
-            yield chunk["message"]["content"]
+            delta = chunk["message"]["content"]
+            assistant_reply += delta
+            yield delta
+
+        # Save conversation turn
+        chat_sessions[session_id].append(
+            {"role": "user", "content": query}
+        )
+        chat_sessions[session_id].append(
+            {"role": "assistant", "content": assistant_reply}
+        )
 
     return StreamingResponse(event_generator(), media_type="text/plain")
+
