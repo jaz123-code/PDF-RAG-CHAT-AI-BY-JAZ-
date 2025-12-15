@@ -9,6 +9,12 @@ function App() {
   const [pdfFile, setPdfFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
+  const [selectedPdf, setSelectedPdf] = useState("");
+  const [sessionId]= useState(()=> crypto.randomUUID());
+  const API_BASE_URL = "http://127.0.0.1:8000";
+
+
+
 
   const chatEndRef = useRef(null);
 
@@ -28,7 +34,7 @@ function App() {
     formData.append("file", pdfFile);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/upload_pdf", {
+      const res = await fetch(`${API_BASE_URL}/upload_pdf`, {
         method: "POST",
         body: formData,
       });
@@ -53,11 +59,11 @@ function App() {
     setQuestion("");
     setLoading(true);
 
-    const response = await fetch(
-      "http://127.0.0.1:8000/stream?query=" +
-        encodeURIComponent(userMessage.content),
-      { method: "POST" }
-    );
+    const url= `${API_BASE_URL}/stream?query=` +
+    encodeURIComponent(userMessage.content) +
+    `&session_id=${sessionId}`+
+    (selectedPdf ? `&source=${encodeURIComponent(selectedPdf)}` : "");
+    const response = await fetch(url, { method: "POST"});
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
@@ -97,6 +103,25 @@ function App() {
         {uploadStatus && (
           <div style={styles.uploadStatus}>{uploadStatus}</div>
         )}
+        {/* PDF Filter Input */}
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "12px" }}>
+          <input
+          type="text"
+          placeholder="Optional: enter PDF name (e.g. python.pdf)"
+          value={selectedPdf}
+          onChange={(e) => setSelectedPdf(e.target.value)}
+          style={{
+            padding: "8px",
+            width: "320px",
+            borderRadius: "8px",
+            border: "1px solid #374151",
+            backgroundColor: "#020617",
+            color: "#f9fafb",
+            outline: "none",
+          }}
+          />
+        </div>
+
 
         {/* Chat */}
         <div style={styles.chatBox}>
@@ -269,20 +294,21 @@ const styles = {
     color: "#9ca3af",
   },
   codeBlock: {
-  backgroundColor: "#020617",
-  color: "#e5e7eb",
-  padding: "14px",
-  borderRadius: "10px",
-  fontSize: "13px",
-  overflowX: "auto",
-  marginTop: "8px",
-},
+    backgroundColor: "#020617",
+    color: "#e5e7eb",
+    padding: "14px",
+    borderRadius: "10px",
+    fontSize: "13px",
+    overflowX: "auto",
+    marginTop: "8px",
+  },
 
-inlineCode: {
-  backgroundColor: "#1f2937",
-  padding: "2px 6px",
-  borderRadius: "6px",
-  fontSize: "13px",
-},
+  inlineCode: {
+    backgroundColor: "#1f2937",
+    padding: "2px 6px",
+    borderRadius: "6px",
+    fontSize: "13px",
+  },
 
 };
+
